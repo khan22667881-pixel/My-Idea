@@ -1,4 +1,3 @@
-# My-Idea
 # 🎓 Subject Explorer
 
 Pick a field of study and get an AI-generated overview covering:
@@ -9,7 +8,7 @@ Pick a field of study and get an AI-generated overview covering:
 - **Inter-relationship**: how it connects with other subjects
 - **Future**: emerging trends and open challenges
 
-Built with [Streamlit](https://streamlit.io) and Google Gemini (Flash model) through the `google-genai` SDK.
+Built with [Streamlit](https://streamlit.io) and the Google Gemini (Flash) REST API. No Google SDK is required; the only extra dependency is `requests`.
 
 ## Features
 
@@ -24,7 +23,7 @@ Built with [Streamlit](https://streamlit.io) and Google Gemini (Flash model) thr
 | File | Purpose |
 |------|---------|
 | `app.py` | The Streamlit app |
-| `requirements.txt` | Python dependencies |
+| `requirements.txt` | Python dependencies (must sit next to `app.py` in the repo root) |
 | `README.md` | This file |
 
 ## Run locally
@@ -74,6 +73,12 @@ If the chosen model is not found, the app automatically tries the fallback liste
    ```
 
 5. Click **Deploy**.
+
+## Troubleshooting
+
+- **`ModuleNotFoundError` / `ImportError` on Streamlit Cloud**: make sure `requirements.txt` is in the same folder as `app.py` (the repo root), is spelled exactly `requirements.txt`, then reboot the app from **Manage app**.
+- **"API key was rejected"**: re-create the key in Google AI Studio and update the secret.
+- **"Model not found"**: type a current Flash model name in the sidebar.
 
 ## Disclaimer
 
