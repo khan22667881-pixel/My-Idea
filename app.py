@@ -1,15 +1,15 @@
 """Subject Explorer - pick a field of study and get an AI-generated overview.
 
-UI: Streamlit | AI: Google Gemini (Flash) via the google-genai SDK.
+UI: Streamlit | AI: Google Gemini (Flash) via the plain REST API
+(no Google SDK needed, so there is nothing extra to install).
 """
 
 import json
 import os
 import re
 
+import requests
 import streamlit as st
-from google import genai
-from google.genai import types
 
 # --------------------------------------------------------------------------
 # Configuration
@@ -19,6 +19,8 @@ from google.genai import types
 DEFAULT_MODEL = "gemini-3.5-flash"
 FALLBACK_MODELS = ["gemini-2.5-flash"]
 MAX_SUBJECT_LENGTH = 80
+API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+REQUEST_TIMEOUT = 90  # seconds
 
 SUBJECTS = {
     "Sciences": [
@@ -179,39 +181,73 @@ def to_markdown(subject: str, level: str, r: dict) -> str:
 def friendly_error(exc: Exception) -> str:
     """Turn API exceptions into messages a student can act on."""
     msg = str(exc).lower()
-    if "api key" in msg or "api_key" in msg or "permission" in msg or "401" in msg or "403" in msg:
+    if "api key" in msg or "api_key" in msg or "permission" in msg or "http 401" in msg or "http 403" in msg:
         return "Your Gemini API key was rejected. Please check that it is correct and active."
-    if "429" in msg or "quota" in msg or "resource_exhausted" in msg or "rate" in msg:
+    if "http 429" in msg or "quota" in msg or "resource_exhausted" in msg or "rate limit" in msg:
         return "Rate limit or free quota reached. Wait a minute and try again."
-    if "not found" in msg or "404" in msg:
+    if "http 404" in msg or "is not found" in msg:
         return "That model name was not found. Change the model in the sidebar."
+    if "network error" in msg or "timed out" in msg:
+        return "Could not reach Gemini. Check the internet connection and try again."
     return f"Something went wrong while contacting Gemini: {exc}"
 
 
 def is_model_not_found(exc: Exception) -> bool:
     msg = str(exc).lower()
-    return "404" in msg or "not found" in msg
+    return "http 404" in msg or "is not found" in msg
+
+
+def call_gemini(api_key: str, model: str, prompt: str) -> str:
+    """Send one request to the Gemini REST API and return the reply text."""
+    body = {
+        "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.4,
+            "responseMimeType": "application/json",
+        },
+    }
+    try:
+        resp = requests.post(
+            API_URL.format(model=model),
+            headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+            json=body,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f"Network error: {exc}") from exc
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {}
+
+    if resp.status_code != 200:
+        detail = _as_dict(payload.get("error")).get("message") or resp.text[:300]
+        raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
+
+    candidates = _as_list(payload.get("candidates"))
+    if not candidates:
+        reason = _as_dict(payload.get("promptFeedback")).get("blockReason", "no answer returned")
+        raise ValueError(f"Gemini returned no answer ({reason}). Try rephrasing the subject.")
+    parts = _as_list(_as_dict(candidates[0].get("content")).get("parts"))
+    text = "".join(
+        p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought")
+    )
+    if not text.strip():
+        raise ValueError("Gemini returned an empty answer. Please try again.")
+    return text
 
 
 def generate_report(api_key: str, model: str, subject: str, level: str) -> dict:
     """Call Gemini and return a normalised result dict."""
-    client = genai.Client(api_key=api_key)
-    config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_INSTRUCTION,
-        response_mime_type="application/json",
-        temperature=0.4,
-    )
     prompt = PROMPT_TEMPLATE.format(subject=subject, level=level)
-
     candidates = [model] + [m for m in FALLBACK_MODELS if m != model]
     last_exc = None
     for name in candidates:
         try:
-            response = client.models.generate_content(
-                model=name, contents=prompt, config=config
-            )
-            return normalise(parse_json_response(response.text))
-        except Exception as exc:  # noqa: BLE001 - we re-raise below
+            return normalise(parse_json_response(call_gemini(api_key, name, prompt)))
+        except Exception as exc:  # noqa: BLE001 - re-raised below
             last_exc = exc
             if not is_model_not_found(exc):
                 raise
